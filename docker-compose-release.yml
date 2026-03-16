@@ -1,6 +1,6 @@
 services:
   sandbox:
-    image: swr.cn-north-4.myhuaweicloud.com/claw/scienceclaw-sandbox:release-20260316
+    image: swr.cn-north-4.myhuaweicloud.com/claw/scienceclaw-sandbox:release-v0.0.2
     security_opt:
     - seccomp:unconfined
     extra_hosts:
