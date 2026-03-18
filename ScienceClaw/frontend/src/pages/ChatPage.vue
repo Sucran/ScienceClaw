@@ -1123,7 +1123,7 @@ watch(isSettingsDialogOpen, async (newVal, oldVal) => {
     try {
       const modelsData = await listModels();
       models.value = modelsData;
-      if (selectedModelId.value && !modelsData.find(m => m.id === selectedModelId.value)) {
+      if (!selectedModelId.value || !modelsData.find(m => m.id === selectedModelId.value)) {
         const sys = modelsData.find(m => m.is_system);
         selectedModelId.value = sys ? sys.id : (modelsData.length > 0 ? modelsData[0].id : null);
       }
