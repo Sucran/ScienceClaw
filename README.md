@@ -105,11 +105,20 @@ Once installed, double-click the desktop shortcut to start ScienceClaw — ready
 
 #### Install & Launch
 
-**1. Clone the repository**
+**1. Get the code**
+
+- **Fresh install:**
 
 ```bash
 git clone https://github.com/AgentTeam-TaichuAI/ScienceClaw.git
 cd ScienceClaw
+```
+
+- **Upgrade an existing installation:**
+
+```bash
+cd ScienceClaw
+git pull
 ```
 
 **2. First launch (recommended) — pull pre-built images**

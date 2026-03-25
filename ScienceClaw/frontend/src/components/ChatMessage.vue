@@ -92,7 +92,7 @@
           <div class="msg-action-divider"></div>
           <button
             class="msg-action-btn msg-action-btn--files"
-            @click="showRoundFilesPanel(roundFiles)"
+            @click="showFileListPanel()"
             :title="`查看本轮对话文件 (${roundFiles.length})`"
           >
             <FolderOpen class="w-4 h-4" />
@@ -539,7 +539,7 @@ const handleConvertToPdf = () => {
 
 // 本轮文件
 const roundFiles = computed(() => messageContent.value.round_files || []);
-const { showRoundFilesPanel } = useFilePanel();
+const { showRoundFilesPanel, showFileListPanel } = useFilePanel();
 
 // 处理 Markdown 内容区域的点击事件（图片 Lightbox + 代码块全屏）
 const handleMarkdownClick = (event: MouseEvent) => {
