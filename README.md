@@ -121,10 +121,10 @@ cd ScienceClaw
 git pull
 ```
 
-**2. First launch (recommended) — pull pre-built images**
+**2. Launch — pull pre-built images**
 
 ```bash
-docker compose -f docker-compose-release.yml up -d
+docker compose -f docker-compose-release.yml up -d --pull always
 ```
 
 > Pulls pre-built images directly — no local compilation needed. Ready in a few minutes.

@@ -124,7 +124,7 @@ git pull
 **2. 启动 —— 拉取预构建镜像**
 
 ```bash
-docker compose -f docker-compose-release.yml up -d
+docker compose -f docker-compose-release.yml up -d --pull always
 ```
 
 > 直接拉取预构建镜像，无需本地编译，几分钟即可完成。
