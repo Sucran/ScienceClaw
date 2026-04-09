@@ -144,9 +144,18 @@ export interface TaskSettingsLike {
   max_output_chars?: number
 }
 
+/** LangGraph / createAgent 的 stream 第二参数（与 langchain ReactAgent.stream 对齐） */
+export interface DeepAgentStreamConfig {
+  streamMode?: string | string[]
+  configurable?: Record<string, unknown>
+}
+
 export interface DeepAgentRuntime {
   invoke: (input: { messages: { role: string; content: string }[] }) => Promise<unknown>
-  stream: (input: { messages: { role: string; content: string }[] }) => AsyncIterable<unknown>
+  stream: (
+    input: { messages: { role: string; content: string }[] },
+    config?: DeepAgentStreamConfig
+  ) => Promise<AsyncIterable<unknown>>
 }
 
 /**
@@ -380,18 +389,6 @@ export async function deepAgent(
   if (existsSync(BUILTIN_SKILLS_DIR)) skillSources.push(BUILTIN_SKILLS_ROUTE)
   if (existsSync(EXTERNAL_SKILLS_DIR)) skillSources.push(EXTERNAL_SKILLS_ROUTE)
 
-  const params: Record<string, unknown> = {
-    model: langchainModel,
-    tools,
-    middleware: [offloadMiddleware, sseMiddleware],
-    systemPrompt,
-    backend,
-    skills: skillSources.length > 0 ? skillSources : undefined,
-    memory: memoryFiles
-  }
-
-  console.log("[Agent] Creating deepAgent with params:", { hasModel: !!langchainModel, toolsCount: tools.length, hasBackend: !!backend, hasMiddleware: true, hasSystemPrompt: !!systemPrompt, skillsCount: skillSources.length, memoryCount: memoryFiles.length })
-  // Note: not passing tools or middleware - let deepagent use its defaults
   const agentParams: Record<string, unknown> = {
     model: langchainModel,
     systemPrompt,
@@ -399,15 +396,12 @@ export async function deepAgent(
     skills: skillSources.length > 0 ? skillSources : undefined,
     memory: memoryFiles
   }
-  console.log("[Agent] Creating deepAgent with params:", agentParams)
+  console.log("[Agent] createDeepAgent:", {
+    toolsCount: tools.length,
+    skillsCount: skillSources.length,
+    memoryCount: memoryFiles.length,
+  })
   const agent = createDeepAgent(agentParams) as unknown as DeepAgentRuntime
-  console.log("[Agent] Agent type:", typeof agent)
-  console.log("[Agent] Agent keys:", Object.keys(agent as any))
-  console.log("[Agent] Agent.stream type:", typeof (agent as any).stream)
-  console.log("[Agent] Agent.invoke type:", typeof (agent as any).invoke)
-  // Check if agent has a 'runnable' or similar property
-  console.log("[Agent] Agent.runnable type:", typeof (agent as any).runnable)
-  console.log("[Agent] Agent._agent type:", typeof (agent as any)._agent)
   console.log("[Agent] deepAgent created successfully")
   return { agent, sseMiddleware, contextWindow, diagnostic: diag }
 }

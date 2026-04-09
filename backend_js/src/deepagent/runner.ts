@@ -17,6 +17,8 @@ import {
 } from "./sessions.js"
 import { normalizePlanSteps, type PlanStep } from "./plan-types.js"
 import { executeHooks, getGlobalRegistry } from "../plugins/index.js"
+import { AIMessage, AIMessageChunk } from "@langchain/core/messages"
+import shortuuid from "short-uuid"
 
 // Hook execution helper
 async function runHooks(
@@ -285,6 +287,31 @@ function buildPlan(description: string): PlanStep[] {
   }])
 }
 
+/**
+ * 从流式 AIMessageChunk 中提取可展示正文（与 Python runner._extract_chunk_text 对齐）
+ */
+function extractChunkTextFromAiChunk(msgChunk: AIMessageChunk): string {
+  const content = msgChunk.content
+  if (!content) return ""
+  if (Array.isArray(content)) {
+    const parts: string[] = []
+    for (const block of content) {
+      if (typeof block === "object" && block !== null) {
+        const b = block as Record<string, unknown>
+        if (b.type === "text") parts.push(String(b.text ?? ""))
+        else if (typeof b.text === "string") parts.push(b.text)
+      } else if (typeof block === "string") {
+        parts.push(block)
+      }
+    }
+    return parts.join("")
+  }
+  if (typeof content === "string") {
+    return content.replace(THINK_TAG_RE, "").trim()
+  }
+  return String(content)
+}
+
 function todosToPlanSteps(todos: Array<Record<string, unknown>>): PlanStep[] {
   return todos.map((todo, i) => {
     const content = String(todo.content || "")
@@ -320,11 +347,7 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
   const protocol = getProtocolManager()
   const session = await asyncGetScienceSession(input.sessionId)
 
-  // 检查会话是否已取消
-  if (session.status === "paused" || session.status === "completed") {
-    yield { event: EventType.ERROR, data: { message: "Session is not active" } }
-    return
-  }
+  // 与 Python runner 一致：不在此处用持久化 status 拒绝整轮对话；REST 已在 POST /chat 将 Mongo 标为 running 并 invalidate 缓存。
 
   yield { event: EventType.AGENT_STEP, data: protocol.createEvent(EventType.AGENT_STEP, { content: "start" }) }
 
@@ -364,29 +387,31 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
 
   // Todo list 追踪
   let currentTodos: Array<Record<string, unknown>> = []
-  console.log("[Runner] Starting stream...")
-  const stream = await runtime.stream({
-    messages: [
-      { role: "system", content: `session:${session.id}` },
-      ...historyMessages.map(m => ({ role: m.role, content: m.content })),
-      { role: "user", content: input.userMessage }
-    ]
-  })
-  console.log("[Runner] Stream result type:", typeof stream)
-  console.log("[Runner] Stream result:", stream)
-  console.log("[Runner] Stream started")
+  // Match Python runner: history + user only. createDeepAgent injects systemPrompt;
+  // an extra system line breaks MiniMax (400 invalid chat setting / 2013).
+  console.log("[Runner] Starting stream (messages + updates)...")
+  const stream = await runtime.stream(
+    {
+      messages: [
+        ...historyMessages.map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: input.userMessage }
+      ]
+    },
+    {
+      streamMode: ["messages", "updates"],
+      configurable: { thread_id: session.thread_id }
+    }
+  )
 
   let finalContent = ""
   let lastThinking = ""
   let streamOk = true
   let chunksHadReasoning = false
   let chunksHadText = false
+  let streamedAssistantDeltas = false
 
   try {
-    let chunkCount = 0
     for await (const chunk of stream) {
-      chunkCount++
-      console.log(`[Runner] Received chunk ${chunkCount}:`, typeof chunk, Object.keys(chunk as any))
       // 每次迭代都轮询中间件事件（确保 todos/tool 事件不延迟）
       for (const mwEvt of middleware.drainEvents()) {
         const mwType = String(mwEvt.event || "")
@@ -430,55 +455,134 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
         }
       }
 
-      const normalized = typeof chunk === "string"
-        ? { type: "text", content: chunk }
-        : (chunk as Record<string, unknown>)
+      // LangGraph：streamMode 为数组时，每项为 [mode, payload]（见 @langchain/langgraph Pregel._streamIterator）
+      let mode: string | null = null
+      let payload: unknown = chunk
+      if (
+        Array.isArray(chunk)
+        && chunk.length === 2
+        && typeof chunk[0] === "string"
+      ) {
+        mode = chunk[0] as string
+        payload = chunk[1]
+      }
 
-      if (normalized.type === "tool_call") {
-        const name = String(normalized.name ?? "unknown")
-        const args = (normalized.args ?? {}) as Record<string, unknown>
-        const toolMeta = protocol.getToolMeta(name)
+      if (mode === "messages") {
+        const pair = payload as [unknown, Record<string, unknown>?]
+        const msgChunk = pair[0]
+        const metadata = pair[1] ?? {}
+        const nodeName = String(metadata.langgraph_node ?? "")
+        if (nodeName.includes("Middleware")) continue
 
-        yield {
-          event: EventType.AGENT_ACTION,
-          data: protocol.createEvent(EventType.AGENT_ACTION, {
-            tool_call_id: normalized.id || crypto.randomUUID(),
-            function: name,
-            args,
-            description: `${name}: ${JSON.stringify(args).slice(0, 200)}`,
-            tool_meta: toolMeta
-          })
+        if (AIMessageChunk.isInstance(msgChunk)) {
+          const ak = (msgChunk.additional_kwargs ?? {}) as Record<string, unknown>
+          const reasoning = ak.reasoning_content
+          if (typeof reasoning === "string" && reasoning.trim()) {
+            chunksHadReasoning = true
+            lastThinking = reasoning.trim()
+            yield {
+              event: EventType.AGENT_THINKING,
+              data: protocol.createEvent(EventType.AGENT_THINKING, { content: lastThinking })
+            }
+          }
+          if (msgChunk.tool_call_chunks && msgChunk.tool_call_chunks.length > 0) continue
+
+          const tokenText = extractChunkTextFromAiChunk(msgChunk)
+          if (tokenText) {
+            let out = tokenText
+            if (out.length > 2 && !out.trim() && out.includes("\n")) out = "\n"
+            chunksHadText = true
+            streamedAssistantDeltas = true
+            finalContent += out
+            yield {
+              event: EventType.AGENT_RESPONSE_CHUNK,
+              data: protocol.createEvent(EventType.AGENT_RESPONSE_CHUNK, { content: out })
+            }
+          }
         }
         continue
       }
 
-      if (normalized.type === "thinking") {
-        const content = String(normalized.content ?? "")
-        if (content) {
-          chunksHadReasoning = true
-          lastThinking = content
-          yield { event: EventType.AGENT_THINKING, data: protocol.createEvent(EventType.AGENT_THINKING, { content }) }
-        }
-        continue
-      }
+      if (mode === "updates" || mode === null) {
+        const updateChunk = (mode === "updates" ? payload : chunk) as Record<string, unknown>
+        if (!updateChunk || typeof updateChunk !== "object" || Array.isArray(updateChunk)) continue
 
-      const text = String(normalized.content ?? normalized.text ?? "")
-      if (text) {
-        chunksHadText = true
-        finalContent = text
-        yield { event: EventType.AGENT_RESPONSE_CHUNK, data: protocol.createEvent(EventType.AGENT_RESPONSE_CHUNK, { content: text }) }
+        for (const [nodeName, nodeOutput] of Object.entries(updateChunk)) {
+          if (nodeName.includes("Middleware")) continue
+
+          let messages: unknown[] = []
+          if (nodeOutput && typeof nodeOutput === "object" && !Array.isArray(nodeOutput)) {
+            const mo = nodeOutput as Record<string, unknown>
+            if (Array.isArray(mo.messages)) messages = mo.messages
+          } else if (Array.isArray(nodeOutput)) {
+            messages = nodeOutput
+          }
+
+          for (const msg of messages) {
+            if (!AIMessage.isInstance(msg)) continue
+
+            const rec: Record<string, unknown> = {
+              content: msg.content,
+              additional_kwargs: msg.additional_kwargs ?? {}
+            }
+            const { thinking, cleanText } = extractThinking(rec)
+
+            if (thinking) lastThinking = thinking
+            if (thinking && !chunksHadReasoning) {
+              yield {
+                event: EventType.AGENT_THINKING,
+                data: protocol.createEvent(EventType.AGENT_THINKING, { content: thinking })
+              }
+            }
+            if (msg.tool_calls?.length && cleanText && !chunksHadText) {
+              yield {
+                event: EventType.AGENT_THINKING,
+                data: protocol.createEvent(EventType.AGENT_THINKING, { content: cleanText })
+              }
+            }
+
+            chunksHadReasoning = false
+            chunksHadText = false
+
+            if (msg.tool_calls?.length) {
+              for (const tc of msg.tool_calls) {
+                const t = tc as { id?: string; name?: string; args?: Record<string, unknown> }
+                const fnName = String(t.name ?? "unknown")
+                const fnArgs = t.args ?? {}
+                const toolMeta = protocol.getToolMeta(fnName)
+                yield {
+                  event: EventType.AGENT_ACTION,
+                  data: protocol.createEvent(EventType.AGENT_ACTION, {
+                    tool_call_id: t.id || crypto.randomUUID(),
+                    function: fnName,
+                    args: fnArgs,
+                    description: `${fnName}: ${JSON.stringify(fnArgs).slice(0, 200)}`,
+                    tool_meta: toolMeta
+                  })
+                }
+              }
+            } else if (cleanText) {
+              finalContent = cleanText
+            }
+          }
+        }
       }
     }
   } catch (exc) {
     streamOk = false
     const errMsg = String(exc)
     console.error("[Runner] Exception details:", exc)
+    const errPayload = (msg: string) => ({
+      event_id: shortuuid.generate(),
+      timestamp: Math.floor(Date.now() / 1000),
+      error: msg
+    })
     if (errMsg.toLowerCase().includes("context length") || errMsg.toLowerCase().includes("context_length")) {
-      yield { event: EventType.ERROR, data: { message: "对话上下文过长，超出模型上下文窗口限制。请开启新会话继续。" } }
+      yield { event: EventType.ERROR, data: errPayload("对话上下文过长，超出模型上下文窗口限制。请开启新会话继续。") }
     } else if (errMsg.toLowerCase().includes("connection") || errMsg.toLowerCase().includes("timeout")) {
-      yield { event: EventType.ERROR, data: { message: "网络连接异常，请检查网络后重试。" } }
+      yield { event: EventType.ERROR, data: errPayload("网络连接异常，请检查网络后重试。") }
     } else {
-      yield { event: EventType.ERROR, data: { message: `任务执行出错：${errMsg}` } }
+      yield { event: EventType.ERROR, data: errPayload(`任务执行出错：${errMsg}`) }
     }
   }
 
@@ -501,13 +605,13 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
     yield { event: EventType.PLAN_UPDATE, data: { plan: currentPlan.map(s => ({ ...s, description: s.content })) } }
   }
 
-  // 发送最终回复
-  if (finalContent) {
+  // 若未走 messages 流式增量，在这里补发整段正文（避免重复推送已流式输出过的全文）
+  if (!streamedAssistantDeltas && finalContent) {
     yield {
       event: EventType.AGENT_RESPONSE_CHUNK,
       data: protocol.createEvent(EventType.AGENT_RESPONSE_CHUNK, { content: finalContent })
     }
-  } else if (lastThinking) {
+  } else if (!streamedAssistantDeltas && lastThinking) {
     yield {
       event: EventType.AGENT_RESPONSE_CHUNK,
       data: protocol.createEvent(EventType.AGENT_RESPONSE_CHUNK, { content: lastThinking })
@@ -527,5 +631,5 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
   // Run session_end hook
   await runHooks("session_end", { sessionId: input.sessionId, success: streamOk }, { sessionId: input.sessionId, userId: input.userId })
 
-  await asyncUpdateScienceSession(input.sessionId, { status: "completed" })
+  await asyncUpdateScienceSession(input.sessionId, { status: "active" })
 }

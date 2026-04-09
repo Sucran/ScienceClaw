@@ -411,6 +411,7 @@ docker compose -f docker-compose-release.yml up -d --pull always
 - **Git workflow**: Use feature branches, pull before push
 - **Commits**: Use clear, descriptive messages
 - **Testing**: Verify changes before committing
+- **backend_js (Elysia)**: After substantive edits under `backend_js/`, when local dev is up, use the Cursor built-in browser to smoke-test `http://localhost:5173/login` → login → one short chat. Credentials default from `backend_js` config/env (local dev only). Optional automation: see `.cursor/rules/backend-js-browser-verify.mdc`. For file-save scripts (lint/format), use Cursor **Hooks** in `.cursor/hooks.json` (`afterFileEdit`) — hooks run shell commands, not browser automation.
 
 ## Release Workflow
 

@@ -260,16 +260,21 @@ function createOpenAICompatibleModel(
   temperature?: number
 ): ChatOpenAI {
   const resolvedBaseUrl = baseUrl || config.dsBaseUrl
+  const isMinimaxHost = /minimax/i.test(resolvedBaseUrl || "")
 
+  // @langchain/openai 1.4+ only puts `fields.configuration` into clientConfig; top-level
+  // `baseURL` is ignored, so the OpenAI SDK falls back to https://api.openai.com/v1.
+  // MiniMax OpenAI-compat often rejects stream_options (include_usage) → 400 / 2013.
   const model = new ChatOpenAI({
     model: modelName,
     apiKey: apiKey,
-    baseURL: resolvedBaseUrl,
+    configuration: { baseURL: resolvedBaseUrl },
     maxTokens: maxTokens,
     temperature: temperature,
     maxRetries: 3,
     timeout: 120000,
     streaming: true,
+    streamUsage: !isMinimaxHost,
   })
 
   // Note: profile and stream reassignment removed - caused "readonly property" errors

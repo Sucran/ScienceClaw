@@ -22,16 +22,24 @@ async function requireAuth(request: Request) {
   return user;
 }
 
-// GET /models - List all models
+// GET /models - List all models (data must be ModelConfig[] — matches Python ApiResponse(data=results))
 router.get('/', async ({ request }) => {
   const user = await requireAuth(request);
 
-  // Get system models and user models
-  const models = await getCollection('models').find({
+  const docs = await getCollection('models').find({
     $or: [{ is_system: true }, { user_id: user.id }],
   }).toArray();
 
-  return ok({ models });
+  const models: ModelConfig[] = docs.map((doc) => {
+    const row = { ...(doc as unknown as ModelConfig & { _id?: unknown }) };
+    delete (row as { _id?: unknown })._id;
+    const id = row.id ?? String((doc as { _id?: { toString?: () => string } })._id ?? '');
+    const out: ModelConfig = { ...row, id };
+    if (out.api_key) out.api_key = '********';
+    return out;
+  });
+
+  return ok(models);
 });
 
 // POST /models - Create model

@@ -3,10 +3,35 @@ import { getCollection } from '../db/mongodb';
 import { getCurrentUser } from '../middleware/auth';
 import type { ApiResponse, Session } from '../types';
 import shortuuid from 'short-uuid';
-import { EventType } from '../deepagent/sse-protocol';
 import { runScienceTaskStream, type RunInput } from '../deepagent/runner';
+import { invalidateScienceSessionCache } from '../deepagent/sessions.js';
+import { mapRunnerChunkToWire } from './sessions-sse-wire';
+import type { ModelConfig } from '../deepagent/engine.js';
 
 const router = new Elysia({ prefix: '/sessions' });
+
+/** Load model row for chat; matches Python get_model_config + ownership checks */
+async function resolveChatModelConfig(
+  userId: string,
+  modelConfigId: string
+): Promise<ModelConfig | null> {
+  const doc = await getCollection('models').findOne({
+    id: modelConfigId,
+    $or: [{ is_system: true }, { user_id: userId }],
+  });
+  if (!doc) return null;
+  const d = doc as Record<string, unknown>;
+  return {
+    provider: String(d.provider ?? 'openai'),
+    model_name: String(d.model_name ?? ''),
+    api_key: typeof d.api_key === 'string' ? d.api_key : undefined,
+    base_url: typeof d.base_url === 'string' ? d.base_url : undefined,
+    max_tokens: typeof d.max_tokens === 'number' ? d.max_tokens : undefined,
+    temperature: typeof d.temperature === 'number' ? d.temperature : undefined,
+    top_p: typeof d.top_p === 'number' ? d.top_p : undefined,
+    context_window: typeof d.context_window === 'number' ? d.context_window : undefined,
+  };
+}
 
 // Helper to create API response
 function ok<T>(data: T): ApiResponse<T> {
@@ -178,8 +203,8 @@ router.delete('/tools/:toolName', async ({ request, params }) => {
   return ok(null);
 });
 
-// POST /sessions/tools/:toolName/read - Read tool file
-router.post('/sessions/tools/:toolName/read', async ({ request, params }) => {
+// POST /sessions/tools/:toolName/read - Read tool file（prefix 已是 /sessions，勿重复写 /sessions）
+router.post('/tools/:toolName/read', async ({ request, params }) => {
   await requireAuth(request);
   const { toolName } = params;
   return ok({ content: '' });
@@ -393,11 +418,21 @@ router.post('/:sessionId/chat', async ({ request, params }) => {
     return error(404, 'Session not found');
   }
 
-  // Update session status
-  await getCollection('sessions').updateOne(
-    { session_id: sessionId },
-    { $set: { status: 'running', updated_at: Math.floor(Date.now() / 1000) } }
-  );
+  let chatModelConfig: ModelConfig | undefined;
+  if (modelConfigId) {
+    const mc = await resolveChatModelConfig(user.id, modelConfigId);
+    if (!mc) {
+      return error(404, 'Model config not found');
+    }
+    chatModelConfig = mc;
+  }
+
+  // 与 findOne 同一过滤条件，避免文档形态差异导致 $set 未命中、Mongo 仍为 paused/completed
+  const sessionKey = { session_id: sessionId, user_id: user.id } as const;
+  await getCollection('sessions').updateOne(sessionKey, {
+    $set: { status: 'running', updated_at: Math.floor(Date.now() / 1000) },
+  });
+  invalidateScienceSessionCache(sessionId);
 
   // Build SSE response
   const encoder = new TextEncoder();
@@ -415,30 +450,44 @@ router.post('/:sessionId/chat', async ({ request, params }) => {
           userMessage: message,
           userId: user.id,
           language,
-          modelConfig: modelConfigId ? { id: modelConfigId } as any : undefined,
+          modelConfig: chatModelConfig,
         };
 
+        let sawDone = false;
         for await (const chunk of runScienceTaskStream(runInput)) {
-          sendEvent(chunk.event, chunk.data);
+          const wired = mapRunnerChunkToWire(chunk);
+          if (wired) {
+            if (wired.event === 'done') sawDone = true;
+            sendEvent(wired.event, wired.data);
+          }
         }
 
-        // Update session status on completion
-        await getCollection('sessions').updateOne(
-          { session_id: sessionId },
-          { $set: { status: 'completed', updated_at: Math.floor(Date.now() / 1000) } }
-        );
+        await getCollection('sessions').updateOne(sessionKey, {
+          $set: { status: 'completed', updated_at: Math.floor(Date.now() / 1000) },
+        });
 
-        sendEvent('done', { session_id: sessionId });
+        if (!sawDone) {
+          sendEvent('done', {
+            event_id: shortuuid.generate(),
+            timestamp: Math.floor(Date.now() / 1000),
+            session_id: sessionId,
+            statistics: {},
+          });
+        }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
         const errStack = err instanceof Error ? err.stack : String(err);
         console.error("[Chat SSE] Error:", errStack);
-        sendEvent('error', { message: errMsg });
+        // Match Python backend + frontend ErrorEventData: { event_id, timestamp, error }
+        sendEvent('error', {
+          event_id: shortuuid.generate(),
+          timestamp: Math.floor(Date.now() / 1000),
+          error: errMsg,
+        });
 
-        await getCollection('sessions').updateOne(
-          { session_id: sessionId },
-          { $set: { status: 'pending', updated_at: Math.floor(Date.now() / 1000) } }
-        );
+        await getCollection('sessions').updateOne(sessionKey, {
+          $set: { status: 'pending', updated_at: Math.floor(Date.now() / 1000) },
+        });
       }
 
       controller.close();

@@ -43,8 +43,19 @@ app.get('/ready', async () => {
   }
 });
 
-// API v1 routes
+// API v1 routes — 未认证等抛错须返回 { code, msg, data } JSON，否则前端 axios 会把非 JSON 当成功解析，
+// 进而访问 response.data.data.sessions 等在控制台报错（例如 GET /sessions）。
 app.group('/api/v1', (app) => app
+  .onError(({ error, set }) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'Unauthorized') {
+      set.status = 401;
+      return { code: 401, msg: 'Unauthorized', data: null };
+    }
+    console.error('[api/v1] unhandled error:', error);
+    set.status = 500;
+    return { code: 500, msg: message || 'Internal Server Error', data: null };
+  })
   .use(authPlugin)
   .use(authRoutes)
   .use(sessionsRoutes)

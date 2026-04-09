@@ -134,6 +134,21 @@ export function setSessionStorage(s: SessionStorage): void {
   storage = s
 }
 
+/**
+ * Drop in-memory snapshot so the next get reloads from storage.
+ * REST chat sets Mongo `running` but the runner reads this cache first; without this,
+ * a stale `completed` from the previous turn can block multi-turn chat.
+ */
+export function invalidateScienceSessionCache(sessionId: string): void {
+  store.delete(sessionId)
+  cacheAtime.delete(sessionId)
+  const pendingTimeout = pendingWrites.get(sessionId)
+  if (pendingTimeout) {
+    clearTimeout(pendingTimeout)
+    pendingWrites.delete(sessionId)
+  }
+}
+
 function evictStaleSessions(): void {
   if (store.size <= MAX_CACHED_SESSIONS) return
 

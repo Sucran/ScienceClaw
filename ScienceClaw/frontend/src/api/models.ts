@@ -35,7 +35,8 @@ export interface UpdateModelRequest {
 
 export async function listModels(): Promise<ModelConfig[]> {
   const response = await apiClient.get<ApiResponse<ModelConfig[]>>('/models');
-  return response.data.data;
+  const d = response.data.data;
+  return Array.isArray(d) ? d : [];
 }
 
 export async function createModel(data: CreateModelRequest): Promise<ModelConfig> {
