@@ -1,0 +1,37 @@
+{
+  "name": "backend-final",
+  "version": "0.1.0",
+  "description": "ScienceClaw three-layer (core/adapters/api) backend built on Bun + Elysia",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "coverage": "vitest run --coverage",
+    "coverage:ci": "vitest run --coverage --reporter=junit --output=coverage/junit.xml"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "@elysiajs/cors": "latest",
+    "@elysiajs/cookie": "latest",
+    "mongodb": "latest",
+    "bcrypt": "latest",
+    "dotenv": "latest",
+    "deepagents": "1.8.8",
+    "langchain": "^1.2.39",
+    "@langchain/openai": "latest",
+    "eventsource-parser": "^3.0.3",
+    "short-uuid": "^5.2.0",
+    "undici": "^7.12.0"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "@types/bcrypt": "latest",
+    "@types/node": "latest",
+    "vitest": "^3.0.0",
+    "@vitest/coverage-v8": "^3.0.0"
+  }
+}

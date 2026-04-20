@@ -1,0 +1,16 @@
+{
+  "id": "example-plugin",
+  "name": "Example Plugin",
+  "description": "Example plugin demonstrating the plugin system",
+  "version": "1.0.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "default": "Hello"
+      }
+    }
+  },
+  "enabledByDefault": true
+}
