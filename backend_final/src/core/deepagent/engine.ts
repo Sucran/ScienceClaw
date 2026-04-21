@@ -7,7 +7,7 @@
  */
 import "dotenv/config"
 import { ChatOpenAI } from "@langchain/openai"
-import type { BaseChatModel, BaseMessage } from "@langchain/core/language_models"
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { config } from "@config"
 
 export interface ModelConfig {
@@ -178,8 +178,9 @@ export function resolveContextWindow(modelName: string, explicit?: number): numb
     return inferred
   }
   // Fallback to config context window
-  console.warn(`[Engine] Unknown model '${modelName}', using default context_window=${config.contextWindow.toLocaleString()}. Set context_window in model config for accurate summarization thresholds.`)
-  return config.contextWindow
+  const fallback = 128_000
+  console.warn(`[Engine] Unknown model '${modelName}', using default context_window=${fallback.toLocaleString()}. Set context_window in model config for accurate summarization thresholds.`)
+  return fallback
 }
 
 export interface ChatModel {
@@ -293,7 +294,7 @@ function createOpenAICompatibleModel(
  * 注意: 对于真正的 Anthropic API，需要设置 base_url 为 Anthropic 的端点
  * 例如: base_url: "https://api.anthropic.com"
  */
-export function createModel(config: {
+export function createModel(opts: {
   model_name: string
   provider?: string
   api_key?: string
@@ -308,7 +309,7 @@ export function createModel(config: {
     base_url = config.dsBaseUrl,
     max_tokens,
     temperature
-  } = config
+  } = opts
 
   // Default: OpenAI-compatible (DeepSeek, MiniMax, Anthropic compatible, etc.)
   if (!api_key) {

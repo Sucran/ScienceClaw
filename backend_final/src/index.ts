@@ -124,15 +124,29 @@ async function ensureAdminUser(): Promise<void> {
 function registerPluginRoutes(registry: PluginRegistry): void {
   const routes = getAllHttpRoutes(registry);
   for (const route of routes) {
-    app.handle(route.method, route.path, async (ctx) => {
-      return route.handler({
+    const method = route.method.toUpperCase();
+    const handler = async (ctx: {
+      body: unknown;
+      params: Record<string, string | undefined>;
+      query: Record<string, string | undefined>;
+      headers: Headers | Record<string, string | undefined>;
+      store: unknown;
+    }) =>
+      route.handler({
         body: ctx.body,
-        params: ctx.params,
-        query: ctx.query,
-        headers: ctx.headers,
+        params: ctx.params as Record<string, string>,
+        query: ctx.query as Record<string, string>,
+        headers: ctx.headers instanceof Headers
+          ? Object.fromEntries(ctx.headers.entries())
+          : (ctx.headers as Record<string, string>),
         session: ctx.store,
       });
-    });
+    if (method === 'GET') app.get(route.path, handler);
+    else if (method === 'POST') app.post(route.path, handler);
+    else if (method === 'PUT') app.put(route.path, handler);
+    else if (method === 'PATCH') app.patch(route.path, handler);
+    else if (method === 'DELETE') app.delete(route.path, handler);
+    else console.warn(`[Plugins] Unsupported HTTP method ${route.method} for ${route.path}`);
   }
   console.log(`[Plugins] Registered ${routes.length} HTTP route(s)`);
 }

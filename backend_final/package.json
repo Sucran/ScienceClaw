@@ -4,6 +4,21 @@
   "description": "ScienceClaw three-layer (core/adapters/api) backend built on Bun + Elysia",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./src/core/index.ts",
+    "./core/deepagent": "./src/core/deepagent/index.ts",
+    "./core/wire": "./src/core/wire/sessions-sse-wire.ts",
+    "./core/ports": "./src/core/ports.ts",
+    "./core/types": "./src/core/types.ts",
+    "./adapters/mongo": "./src/adapters/mongo/index.ts",
+    "./adapters/sandbox-aio": "./src/adapters/sandbox-aio/backend.ts",
+    "./adapters/supabase": "./src/adapters/supabase/index.ts",
+    "./adapters/file": "./src/adapters/file/session-storage.ts",
+    "./api": "./src/api/index.ts",
+    "./plugins": "./src/plugins/index.ts",
+    "./config": "./src/config.ts"
+  },
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",

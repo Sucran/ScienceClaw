@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { generateAccessToken, generateRefreshToken } from '../../src/utils/token.ts'
+import { generateAccessToken, generateRefreshToken } from '../../src/adapters/mongo/token.ts'
 
 describe('Token Utilities', () => {
   describe('generateAccessToken', () => {

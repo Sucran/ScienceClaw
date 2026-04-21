@@ -6,7 +6,7 @@ import {
   getProtocolManager,
   type SSEEvent,
   type ToolMeta
-} from '../../src/deepagent/sse-protocol.ts'
+} from '../../src/core/deepagent/sse-protocol.ts'
 
 describe('SSE Protocol', () => {
   let manager: SSEProtocolManager

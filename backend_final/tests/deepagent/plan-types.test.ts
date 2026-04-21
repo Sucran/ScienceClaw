@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizePlanSteps, type PlanStep, type PlanStatus } from '../../src/deepagent/plan-types.ts'
+import { normalizePlanSteps, type PlanStep, type PlanStatus } from '../../src/core/deepagent/plan-types.ts'
 
 describe('Plan Types', () => {
   describe('normalizePlanSteps', () => {

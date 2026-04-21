@@ -2,20 +2,23 @@
  * 参考代码：
  * - /ScienceClaw/backend/deepagent/agent.py:1-587
  */
-import { CompositeBackend, createDeepAgent, FilesystemBackend } from "deepagents"
+import {
+  CompositeBackend,
+  createDeepAgent,
+  FilesystemBackend,
+  type BackendProtocol
+} from "deepagents"
 import { getDiagnosticManager } from "./diagnostic.js"
 import { createModel, getLlmModel, resolveContextWindow, type ModelConfig } from "./engine.js"
 import { config } from "@config"
 import { FilteredFilesystemBackend } from "./filtered-backend.js"
-import { FullSandboxBackend } from "@adapters/sandbox-aio/backend.js"
 import { webSearch, webCrawl, proposeSkillSave, proposeToolSave, evalSkill, gradeEval } from "./tools.js"
 import { tooluniverseInfo, tooluniverseRun, tooluniverseSearch } from "./tooluniverse-tools.js"
 import { SSEMonitoringMiddleware } from "./sse-middleware.js"
 import { ToolResultOffloadMiddleware } from "./offload-middleware.js"
 import { existsSync, mkdirSync, chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { getGlobalRegistry, getAllTools } from "@plugins/index.js"
-import type { OpenClawPluginToolDefinition } from "@plugins/sdk/core.js"
+import type { PluginRegistry } from "@plugins/types.js"
 
 /**
  * 参考代码：
@@ -144,6 +147,12 @@ export interface TaskSettingsLike {
   max_output_chars?: number
 }
 
+/** Optional capabilities for deepAgent — omit sandbox/plugins imports when unused. */
+export interface DeepAgentDeps {
+  fsBackend?: BackendProtocol
+  pluginRegistry?: PluginRegistry | null
+}
+
 /** LangGraph / createAgent 的 stream 第二参数（与 langchain ReactAgent.stream 对齐） */
 export interface DeepAgentStreamConfig {
   streamMode?: string | string[]
@@ -209,8 +218,16 @@ export async function getBlockedTools(userId?: string | null): Promise<Set<strin
  * 参考代码：
  * - /ScienceClaw/backend/deepagent/agent.py:244-270
  */
-function collectTools(blockedTools: Set<string>): Array<(...args: unknown[]) => unknown> {
-  // Collect built-in tools
+/**
+ * Collect built-in + (optionally injected) plugin tools.
+ *
+ * core never imports `@plugins/*` itself — Bun/Elysia entry must pass a
+ * `pluginRegistry` through `DeepAgentDeps` if plugin tools are desired.
+ */
+function collectTools(
+  blockedTools: Set<string>,
+  pluginRegistry?: PluginRegistry | null
+): Array<(...args: unknown[]) => unknown> {
   const builtinTools: Array<(...args: unknown[]) => unknown> = [
     webSearch as (...args: unknown[]) => unknown,
     webCrawl as (...args: unknown[]) => unknown,
@@ -224,23 +241,15 @@ function collectTools(blockedTools: Set<string>): Array<(...args: unknown[]) => 
     ...externalTools.map(t => t.fn).filter((fn): fn is (...args: unknown[]) => unknown => typeof fn === "function")
   ]
 
-  // Collect plugin tools from registry
-  const registry = getGlobalRegistry()
   let pluginTools: Array<(...args: unknown[]) => unknown> = []
-  if (registry) {
-    const allPluginTools = getAllTools(registry)
-    pluginTools = allPluginTools.map(tool => {
-      const toolName = tool.name
-      // Create a wrapper function that executes the plugin tool
-      return (async (...args: unknown[]) => {
+  if (pluginRegistry && pluginRegistry.tools && pluginRegistry.tools.size > 0) {
+    for (const tool of pluginRegistry.tools.values()) {
+      pluginTools.push((async (...args: unknown[]) => {
         const input = args[0]
-        const context = {
-          config: {},
-          runtimeConfig: {},
-        }
+        const context = { config: {}, runtimeConfig: {} }
         return tool.execute(input, context)
-      }) as (...args: unknown[]) => unknown
-    })
+      }) as (...args: unknown[]) => unknown)
+    }
   }
 
   const all = [...builtinTools, ...pluginTools]
@@ -251,7 +260,10 @@ function collectTools(blockedTools: Set<string>): Array<(...args: unknown[]) => 
  * 参考代码：
  * - /ScienceClaw/backend/deepagent/agent.py:82-111
  */
-function buildBackend(sandbox: FullSandboxBackend, blockedSkills: Set<string>) {
+function buildBackend(
+  sandbox: BackendProtocol | undefined,
+  blockedSkills: Set<string>
+): BackendProtocol | undefined {
   const routes: Record<string, FilesystemBackend | FilteredFilesystemBackend> = {}
   if (existsSync(BUILTIN_SKILLS_DIR)) {
     routes[BUILTIN_SKILLS_ROUTE] = new FilesystemBackend({
@@ -266,7 +278,10 @@ function buildBackend(sandbox: FullSandboxBackend, blockedSkills: Set<string>) {
       blockedSkills
     })
   }
-  if (Object.keys(routes).length === 0) return sandbox
+  const hasRoutes = Object.keys(routes).length > 0
+  if (!sandbox && !hasRoutes) return undefined
+  if (!sandbox) return routes[Object.keys(routes)[0]]
+  if (!hasRoutes) return sandbox
   return new CompositeBackend(sandbox, routes)
 }
 
@@ -322,7 +337,8 @@ export async function deepAgent(
   userId?: string | null,
   taskSettings?: TaskSettingsLike | null,
   diagnosticEnabled = false,
-  language?: string
+  language?: string,
+  deps?: DeepAgentDeps
 ): Promise<{ agent: DeepAgentRuntime; sseMiddleware: SSEMonitoringMiddleware; contextWindow: number; diagnostic: unknown }> {
   // 构建完整的模型配置 (合并用户配置和全局默认配置)
   const effectiveConfig = {
@@ -342,24 +358,23 @@ export async function deepAgent(
 
   const blockedSkills = await getBlockedSkills(userId)
   const blockedTools = await getBlockedTools(userId)
-  const tools = collectTools(blockedTools)
-  const sandbox = new FullSandboxBackend({
-    sessionId,
-    restUrl: SANDBOX_REST_URL,
-    initialCwd: `${WORKSPACE_DIR}/${sessionId}`,
-    timeoutMs: (taskSettings?.sandbox_exec_timeout ?? 600) * 1000,
-    maxOutputChars: taskSettings?.max_output_chars
-  })
+  const tools = collectTools(blockedTools, deps?.pluginRegistry)
+  const sandbox: BackendProtocol | undefined = deps?.fsBackend
 
-  // Get sandbox context
+  // Get sandbox context (Sandbox-AIO backend exposes getContext; pure BackendProtocol may not)
   let sandboxInfo: string | null = null
-  try {
-    const ctx = await sandbox.getContext()
-    if (ctx && (ctx as { success?: boolean }).success !== false) {
-      sandboxInfo = JSON.stringify(ctx)
+  if (sandbox) {
+    try {
+      const ext = sandbox as BackendProtocol & { getContext?: () => Promise<unknown> }
+      if (typeof ext.getContext === "function") {
+        const ctx = await ext.getContext()
+        if (ctx && (ctx as { success?: boolean }).success !== false) {
+          sandboxInfo = JSON.stringify(ctx)
+        }
+      }
+    } catch {
+      // Ignore context errors
     }
-  } catch {
-    // Ignore context errors
   }
 
   const backend = buildBackend(sandbox, blockedSkills)
@@ -368,16 +383,24 @@ export async function deepAgent(
   // Initialize memory files
   const memoryFiles = initMemoryFiles(`${WORKSPACE_DIR}/${sessionId}`, userId)
 
-  // Tool result offload middleware
-  const offloadMiddleware = new ToolResultOffloadMiddleware(`${WORKSPACE_DIR}/${sessionId}`, sandbox)
-
+  // Offload middleware only makes sense when a real sandbox FS backend is present;
+  // otherwise "offloading" to state just burns tokens.
   const diag = getDiagnosticManager(Boolean(diagnosticEnabled))
-  if (diag) {
-    offloadMiddleware.setDiagnostic({
-      logOffload: (tool, original, summary, path) => {
-        console.log(`[Offload] ${tool}: ${original} -> ${summary} chars -> ${path}`)
+  if (sandbox) {
+    const offloadWriteBackend = {
+      write: async (path: string, content: string) => {
+        const r = await Promise.resolve(sandbox.write(path, content))
+        return { error: r.error }
       }
-    })
+    }
+    const offloadMiddleware = new ToolResultOffloadMiddleware(`${WORKSPACE_DIR}/${sessionId}`, offloadWriteBackend)
+    if (diag) {
+      offloadMiddleware.setDiagnostic({
+        logOffload: (tool, original, summary, path) => {
+          console.log(`[Offload] ${tool}: ${original} -> ${summary} chars -> ${path}`)
+        }
+      })
+    }
   }
 
   const systemPrompt = getSystemPrompt(`${WORKSPACE_DIR}/${sessionId}`, sandboxInfo, language)
@@ -392,10 +415,10 @@ export async function deepAgent(
   const agentParams: Record<string, unknown> = {
     model: langchainModel,
     systemPrompt,
-    backend,
     skills: skillSources.length > 0 ? skillSources : undefined,
     memory: memoryFiles
   }
+  if (backend) agentParams.backend = backend
   console.log("[Agent] createDeepAgent:", {
     toolsCount: tools.length,
     skillsCount: skillSources.length,
@@ -428,6 +451,7 @@ export async function deepAgentEval(
   // 创建 LangChain 模型实例
   const langchainModel = createModel(effectiveConfig)
 
+  const { FullSandboxBackend } = await import("@adapters/sandbox-aio/backend.js")
   const sandbox = new FullSandboxBackend({
     sessionId,
     restUrl: SANDBOX_REST_URL,

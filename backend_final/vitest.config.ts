@@ -1,4 +1,8 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+
+const root = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig({
   test: {
@@ -35,7 +39,12 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': '/src'
+      '@': path.join(root, 'src'),
+      '@config': path.join(root, 'src/config.ts'),
+      '@core': path.join(root, 'src/core'),
+      '@adapters': path.join(root, 'src/adapters'),
+      '@api': path.join(root, 'src/api'),
+      '@plugins': path.join(root, 'src/plugins'),
     },
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs']
   }

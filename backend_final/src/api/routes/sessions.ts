@@ -7,6 +7,45 @@ import { runScienceTaskStream, type RunInput } from '@core/deepagent/runner.js';
 import { invalidateScienceSessionCache } from '@core/deepagent/sessions.js';
 import { mapRunnerChunkToWire } from '@core/wire/sessions-sse-wire.js';
 import type { ModelConfig } from '@core/deepagent/engine.js';
+import type { DeepAgentDeps } from '@core/deepagent/agent.js';
+import type { HookRunner } from '@core/ports.js';
+import { FullSandboxBackend } from '@adapters/sandbox-aio/backend.js';
+import { executeHooks, getGlobalRegistry } from '@plugins/index.js';
+
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR ?? '/home/scienceclaw';
+const SANDBOX_REST_URL = process.env.SANDBOX_REST_URL ?? 'http://localhost:18080';
+
+/**
+ * Compose the capabilities the Bun/Elysia host wants to inject into core:
+ *   - sandbox-aio filesystem backend
+ *   - currently-loaded plugin registry (tools + hooks)
+ * Core itself never imports these modules; they arrive here through `deps`.
+ */
+function buildAgentDeps(sessionId: string, taskSettings?: { sandbox_exec_timeout?: number; max_output_chars?: number }): {
+  deps: DeepAgentDeps;
+  hooks: HookRunner;
+} {
+  const fsBackend = new FullSandboxBackend({
+    sessionId,
+    restUrl: SANDBOX_REST_URL,
+    initialCwd: `${WORKSPACE_DIR}/${sessionId}`,
+    timeoutMs: (taskSettings?.sandbox_exec_timeout ?? 600) * 1000,
+    maxOutputChars: taskSettings?.max_output_chars,
+  });
+  const pluginRegistry = getGlobalRegistry();
+  const hooks: HookRunner = {
+    async runHook(event, data, ctx) {
+      const reg = getGlobalRegistry();
+      if (reg) {
+        await executeHooks(reg, event, data, { sessionId: ctx.sessionId, userId: ctx.userId });
+      }
+    },
+  };
+  return {
+    deps: { fsBackend, pluginRegistry: pluginRegistry ?? null },
+    hooks,
+  };
+}
 
 const router = new Elysia({ prefix: '/sessions' });
 
@@ -445,12 +484,15 @@ router.post('/:sessionId/chat', async ({ request, params }) => {
       };
 
       try {
+        const { deps: agentDeps, hooks: agentHooks } = buildAgentDeps(sessionId);
         const runInput: RunInput = {
           sessionId,
           userMessage: message,
           userId: user.id,
           language,
           modelConfig: chatModelConfig,
+          deps: agentDeps,
+          hooks: agentHooks,
         };
 
         let sawDone = false;

@@ -3,11 +3,9 @@
  * - ScienceSession 数据结构: /ScienceClaw/backend/deepagent/sessions.py:43-68
  * - 会话 CRUD 接口: /ScienceClaw/backend/deepagent/sessions.py:174-343
  */
-import { mkdir, readFile, writeFile, readdir, unlink, stat, rm } from "node:fs/promises"
-import { existsSync } from "node:fs"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { createHash } from "node:crypto"
-import { join, dirname } from "node:path"
-import { homedir } from "node:os"
+import { join } from "node:path"
 import { normalizePlanSteps, type PlanStep } from "./plan-types.js"
 
 export type SessionStatus = "pending" | "active" | "paused" | "completed"
@@ -35,7 +33,6 @@ export interface SessionStorage {
   delete(sessionId: string): Promise<void>
 }
 
-const SESSIONS_DIR = join(homedir(), ".scienceclaw", "sessions")
 const MAX_CACHED_SESSIONS = 200
 const CACHE_TTL_MS = 3_600_000 // 1 hour
 
@@ -49,69 +46,24 @@ function generateThreadId(): string {
 
 export class ScienceSessionNotFoundError extends Error {}
 
-/**
- * 文件系统会话存储实现
- * 当前使用文件存储，后续可替换为 openclaw 存储插件
- */
-class FileSessionStorage implements SessionStorage {
-  private async ensureDir(): Promise<void> {
-    await mkdir(SESSIONS_DIR, { recursive: true })
-  }
+const SESSION_STORAGE_NOT_CONFIGURED =
+  "[core] SessionStorage not configured. Call setSessionStorage() before using session APIs (e.g. before runScienceTaskStream())."
 
-  private sessionPath(sessionId: string): string {
-    return join(SESSIONS_DIR, `${sessionId}.json`)
+class NullSessionStorage implements SessionStorage {
+  async create(): Promise<void> {
+    throw new Error(SESSION_STORAGE_NOT_CONFIGURED)
   }
-
-  async create(session: ScienceSession): Promise<void> {
-    await this.ensureDir()
-    await writeFile(this.sessionPath(session.id), JSON.stringify(session, null, 2), "utf-8")
+  async get(): Promise<ScienceSession | null> {
+    throw new Error(SESSION_STORAGE_NOT_CONFIGURED)
   }
-
-  async get(sessionId: string): Promise<ScienceSession | null> {
-    try {
-      const path = this.sessionPath(sessionId)
-      if (!existsSync(path)) return null
-      const content = await readFile(path, "utf-8")
-      return JSON.parse(content) as ScienceSession
-    } catch {
-      return null
-    }
-  }
-
   async list(): Promise<ScienceSession[]> {
-    await this.ensureDir()
-    try {
-      const files = await readdir(SESSIONS_DIR)
-      const sessions: ScienceSession[] = []
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue
-        try {
-          const content = await readFile(join(SESSIONS_DIR, file), "utf-8")
-          sessions.push(JSON.parse(content) as ScienceSession)
-        } catch {
-          // Skip invalid files
-        }
-      }
-      return sessions.sort((a, b) => b.updated_at - a.updated_at)
-    } catch {
-      return []
-    }
+    throw new Error(SESSION_STORAGE_NOT_CONFIGURED)
   }
-
-  async update(session: ScienceSession): Promise<void> {
-    await this.ensureDir()
-    const tmpPath = this.sessionPath(session.id) + ".tmp"
-    await writeFile(tmpPath, JSON.stringify(session, null, 2), "utf-8")
-    // Atomic rename
-    const { rename } = await import("node:fs/promises")
-    await rename(tmpPath, this.sessionPath(session.id))
+  async update(): Promise<void> {
+    throw new Error(SESSION_STORAGE_NOT_CONFIGURED)
   }
-
-  async delete(sessionId: string): Promise<void> {
-    const path = this.sessionPath(sessionId)
-    if (existsSync(path)) {
-      await unlink(path)
-    }
+  async delete(): Promise<void> {
+    throw new Error(SESSION_STORAGE_NOT_CONFIGURED)
   }
 }
 
@@ -125,7 +77,7 @@ const store = new Map<string, ScienceSession>()
 const cacheAtime = new Map<string, number>()
 const pendingWrites = new Map<string, NodeJS.Timeout>()
 const DEFAULT_WORKSPACE_DIR = process.env.WORKSPACE_DIR ?? "/home/scienceclaw"
-let storage: SessionStorage = new FileSessionStorage()
+let storage: SessionStorage = new NullSessionStorage()
 
 /**
  * 设置会话存储实现（用于测试或替换为其他存储后端）

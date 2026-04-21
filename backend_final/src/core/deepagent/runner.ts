@@ -5,7 +5,8 @@
  * 参考代码：
  * - /ScienceClaw/backend/deepagent/runner.py:1-892
  */
-import { deepAgent, type TaskSettingsLike } from "./agent.js"
+import { deepAgent, type DeepAgentDeps, type TaskSettingsLike } from "./agent.js"
+import type { HookRunner } from "@core/ports.js"
 import type { ModelConfig } from "./engine.js"
 import { EventType, getProtocolManager } from "./sse-protocol.js"
 import { SSEMonitoringMiddleware } from "./sse-middleware.js"
@@ -16,24 +17,10 @@ import {
   type ScienceSession
 } from "./sessions.js"
 import { normalizePlanSteps, type PlanStep } from "./plan-types.js"
-import { executeHooks, getGlobalRegistry } from "@plugins/index.js"
 import { AIMessage, AIMessageChunk } from "@langchain/core/messages"
 import shortuuid from "short-uuid"
 
-// Hook execution helper
-async function runHooks(
-  event: string,
-  eventData: unknown,
-  context: { sessionId: string; userId?: string | null }
-): Promise<void> {
-  const registry = getGlobalRegistry()
-  if (registry) {
-    await executeHooks(registry, event, eventData, {
-      sessionId: context.sessionId,
-      userId: context.userId ?? undefined,
-    })
-  }
-}
+const noopHooks: HookRunner = { async runHook() {} }
 
 export interface StreamChunk {
   event: string
@@ -47,7 +34,13 @@ export interface RunInput {
   userId?: string | null
   taskSettings?: TaskSettingsLike
   language?: string
+  /** Optional lifecycle hooks; default loads plugin hooks via dynamic import when available. */
+  hooks?: HookRunner
+  /** Optional sandbox FS + plugin registry; omit to use dynamic defaults (Bun app). */
+  deps?: DeepAgentDeps
 }
+
+export type { HookRunner } from "@core/ports.js"
 
 const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/gi
 const THINK_CONTENT_RE = /<think>([\s\S]*?)<\/think>/gi
@@ -346,13 +339,14 @@ function todosToPlanSteps(todos: Array<Record<string, unknown>>): PlanStep[] {
 export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<StreamChunk, void, unknown> {
   const protocol = getProtocolManager()
   const session = await asyncGetScienceSession(input.sessionId)
+  const hookRunner = input.hooks ?? noopHooks
 
   // 与 Python runner 一致：不在此处用持久化 status 拒绝整轮对话；REST 已在 POST /chat 将 Mongo 标为 running 并 invalidate 缓存。
 
   yield { event: EventType.AGENT_STEP, data: protocol.createEvent(EventType.AGENT_STEP, { content: "start" }) }
 
   // Run before_agent_start hook
-  await runHooks("before_agent_start", { sessionId: input.sessionId }, { sessionId: input.sessionId, userId: input.userId })
+  await hookRunner.runHook("before_agent_start", { sessionId: input.sessionId }, { sessionId: input.sessionId, userId: input.userId ?? undefined })
 
   console.log("[Runner] Creating deepAgent...")
   // 创建 agent（内部已包含 middleware）
@@ -362,7 +356,8 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
     input.userId,
     input.taskSettings,
     false,
-    input.language
+    input.language,
+    input.deps
   )
   console.log("[Runner] deepAgent created successfully")
 
@@ -420,7 +415,7 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
 
         if (mwType === "middleware_tool_start") {
           // Run before_tool_call hook
-          await runHooks("before_tool_call", { function: mwData.function, args: mwData.args }, { sessionId: input.sessionId, userId: input.userId })
+          await hookRunner.runHook("before_tool_call", { function: mwData.function, args: mwData.args }, { sessionId: input.sessionId, userId: input.userId ?? undefined })
 
           yield {
             event: EventType.AGENT_TOOL_START,
@@ -433,7 +428,7 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
           }
         } else if (mwType === "middleware_tool_complete") {
           // Run after_tool_call hook
-          await runHooks("after_tool_call", { function: mwData.function, args: mwData.args, result: mwData.result }, { sessionId: input.sessionId, userId: input.userId })
+          await hookRunner.runHook("after_tool_call", { function: mwData.function, args: mwData.args, result: mwData.result }, { sessionId: input.sessionId, userId: input.userId ?? undefined })
 
           yield {
             event: EventType.AGENT_TOOL_END,
@@ -629,7 +624,7 @@ export async function* runScienceTaskStream(input: RunInput): AsyncGenerator<Str
   }
 
   // Run session_end hook
-  await runHooks("session_end", { sessionId: input.sessionId, success: streamOk }, { sessionId: input.sessionId, userId: input.userId })
+  await hookRunner.runHook("session_end", { sessionId: input.sessionId, success: streamOk }, { sessionId: input.sessionId, userId: input.userId ?? undefined })
 
   await asyncUpdateScienceSession(input.sessionId, { status: "active" })
 }

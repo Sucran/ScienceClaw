@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hashPassword, verifyPassword } from '../../src/utils/password.ts'
+import { hashPassword, verifyPassword } from '../../src/adapters/mongo/password.ts'
 
 describe('Password Utilities', () => {
   describe('hashPassword', () => {

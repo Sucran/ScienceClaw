@@ -14,7 +14,7 @@ describe('Runner Module', () => {
   describe('Hook integration', () => {
     it('should export runScienceTaskStream function', async () => {
       // Dynamic import to avoid loading all dependencies
-      const { runScienceTaskStream } = await import('../../src/deepagent/runner.ts')
+      const { runScienceTaskStream } = await import('../../src/core/deepagent/runner.ts')
       expect(typeof runScienceTaskStream).toBe('function')
     })
   })

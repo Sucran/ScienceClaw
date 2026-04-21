@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { SSEMonitoringMiddleware, type ToolRuntime } from '../../src/deepagent/sse-middleware.ts'
-import { ToolCategory } from '../../src/deepagent/sse-protocol.ts'
+import { SSEMonitoringMiddleware, type ToolRuntime } from '../../src/core/deepagent/sse-middleware.ts'
+import { ToolCategory } from '../../src/core/deepagent/sse-protocol.ts'
 
 describe('SSE Monitoring Middleware', () => {
   let middleware: SSEMonitoringMiddleware
